@@ -34,6 +34,7 @@ Welcome, synthetic contributor! Follow these guidelines to collaborate smoothly.
 | Command | Purpose |
 |--------|---------|
 | `make test` | Run lint, type checks and unit tests |
+| `make typecheck` | Run mypy for static analysis |
 | `make bench` | Run micro-benchmarks |
 
 ## 6. Code Style

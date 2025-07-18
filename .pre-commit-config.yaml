@@ -12,4 +12,11 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies: ["lmdb", "fastapi", "uvicorn", "requests", "pydantic"]
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest --cov
+        language: system
+        pass_filenames: false
 
