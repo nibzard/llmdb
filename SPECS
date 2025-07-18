@@ -1,0 +1,226 @@
+LLMDB – Functional & Technical Specification (v 0.9-draft)
+“A time-aware, schema-rewritable, WASM-powered memory store for autonomous agents”
+
+⸻
+
+1 Purpose & Scope
+
+LLMDB is an embedded, ultra-small, key–value core that can look like a document store, a property graph, a bitemporal warehouse, or a vector index—depending entirely on what its controlling LLM (or any other client) asks it to be.
+It combines three proven ideas:
+	•	LMDB-style single-file B+-tree storage for raw speed and tiny footprint.  ￼
+	•	In-database WebAssembly to run user logic next to the data, similar to SpaceTimeDB.  ￼ ￼
+	•	Bitemporal keys (valid time & transaction time) so every fact is versioned “in space and time”.  ￼
+
+⸻
+
+2 Guiding Principles
+
+Principle	Rationale
+Minimal core	≤ 70 KB static library; no dynamic allocation in hot path.
+Everything is a KV page	Graph edges, JSON docs, vector blocks all compile down to a (key, value) pair.
+Schema = data	Schemas, migrations and even code modules live inside the same store under the _meta/* prefix.
+Time-first	Every key is automatically version-stamped; nothing is ever overwritten.
+User-code at data-latency	Deterministic WASM functions run in the engine with fuel limits, no network hop.
+LLM-aware	Special endpoints let an LLM inspect current formats, propose migrations and load adapters.
+
+
+⸻
+
+3 Primary Use-Cases
+	1.	Agent memory – few-GB local store an LLM agent can freely reshape.
+	2.	Real-time graph analytics – stream inserts + WASM edge-derivation jobs.
+	3.	Vector+symbolic hybrid search – embeddings & triples in one file.
+	4.	Offline, privacy-first AI – all data/code stays on device; no infra.
+
+⸻
+
+4 Functional Requirements
+
+4.1 Data Model
+	•	Key structure:
+⟨partitionId⟩ | ⟨userKey⟩ | ⟨validFrom⟩ | ⟨txId⟩
+partitionId enables sharding; the two trailing components implement full bitemporality.
+	•	Value envelope: 1-byte type tag + payload. Supported tags: raw bytes, JSON, MsgPack, Protobuf, EdgeRecord, VectorBlock (f32[ ]).
+	•	Logical views: optional adapters expose the same pages as:
+	•	Document store – BSON/JSON projection
+	•	Property graph – (nodeId) → set(edgeIds); (edgeId) → {from,to,props}
+	•	Columnar – pages grouped into column chunks
+	•	Time queries: built-in operators AS OF VALID ..., BETWEEN TX ... just scan the compound key ranges.
+
+4.2 Schema Definition & Migration
+	•	Schemas are JSON-Schema-like docs stored under _meta/schema/{name}/{version}.
+	•	A migration record contains:
+	•	➜ predicate (what pages to rewrite)
+	•	➜ WASM blob (how to rewrite)
+	•	Runtime loads migrations lazily; an LLM simply PUTs a new record and the engine schedules chunked background rewrites.
+
+4.3 Embedded Code Execution
+	•	Runtime: Wasmtime (WASI-preview2) sandbox, fuel-metered.
+	•	Call types: map_pages, reduce_pages, tx_hook, custom_index.
+	•	Resource caps: 64 MiB memory, 25 ms CPU, or abort.
+	•	Modules are stored in _meta/code/{hash}; references from schema or directly in a query.
+
+4.4 API Surface
+
+Layer	Interface	Notes
+Embedded	C / Rust FFI	zero-copy cursors
+RPC	gRPC	unary & stream
+HTTP	REST JSON & /sql	simple; good for LLMs
+CLI	llmdb> _	ships with REPL & bench cmds
+
+4.5 Transactions & Consistency
+	•	Readers get zero-copy immutable snapshot (MVCC).
+	•	Single writer per process; write intent queue supports ∼60 k tx/s on NVMe.
+	•	Durability: copy-on-write pages + optional WAL for fsync batching.
+
+4.6 Observability
+
+Built-in /metrics Prometheus endpoint; trace spans around WASM invocations.
+
+⸻
+
+5 Non-Functional Targets
+
+Category	Goal
+Startup footprint	≤ 5 MB RSS
+Read latency (p99)	< 60 µs for 256-B value on modern SSD
+Write throughput	250 MB/s sustained, 1 writer
+Throughput w/ WASM map	≥ 8 M pages/s (32-B keys)
+Max DB size	128 TB (64-bit map)
+Crash recovery	< 1 s after power loss
+Code sandbox escape	none (WASM, no syscalls except clock)
+
+Low-latency WASM aligns with edge runtime research.  ￼ ￼
+
+⸻
+
+6 System Architecture
+
+┌────────────┐  WASM  ┌───────────────┐
+│  Client /  │◀──────▶│  Exec Sandbox │
+│   LLM      │        └───▲─────┬─────┘
+└─────▲──────┘            │     │
+      │gRPC/HTTP          │     │
+┌─────┴──────┐        ┌───┴─────┴─────┐
+│  Query &   │ index  │ Schema + Meta │
+│  Mutation  │◀──────▶│   Catalog     │
+│  Engine    │        └───▲───────────┘
+└─────▲──────┘            │
+      │Cursors            │
+┌─────┴──────────────┐    │
+│  MVCC Page Cache   │    │
+└─────▲──────────────┘    │
+      │MMAP I/O           │
+┌─────┴──────────────┐
+│  Single-file B+Tree│
+└─────────────────────┘
+
+All rectangles are libraries; only the storage file is persistent.
+
+⸻
+
+7 Key Data Structures
+
+Structure	Purpose	Notes
+Page header (16 B)	id, size, flags, crc	directly LMDB-compatible
+Freelist bitmap	page reuse	melts into file tail
+Vector block	4-KiB slab + SIMD-friendly row-major floats	aligns for AVX512
+Edge record	{from:64b,to:64b, ts:128b, propsRef:128b}	constant 48 B
+
+
+⸻
+
+8 Query Language Sketch (LQL)
+
+SELECT node, edge
+FROM GRAPH friends
+WHERE node.id = :uid
+  AND AS OF VALID '2025-07-01'
+EMBEDDED WASM map_edges('infer_reverse')
+LIMIT 100;
+
+Any statement may include:
+EMBEDDED WASM <module>('fn', args…) – runs in-flight, returns stream.
+
+⸻
+
+9 Embedded Module Lifecycle
+
+Step	gRPC method	Description
+Upload	PutModule	SHA-256 dedup; store under _meta/code/{hash}
+Verify	automatic	validate imports, fuel budget
+Link	AttachModule	bind to schema/migration
+Invoke	query hint	engine spins wasm, passes page slices
+Revoke	DisableModule	flag in meta; readers ignore next tx
+
+
+⸻
+
+10 Concurrency & Recovery
+	•	Readers: snapshot id = file root ptr; never block.
+	•	Writer: copy dirty pages, update root, fsync commit record.
+	•	Crash: find last valid root by CRC, truncate freelist diff.
+
+Design inherits LMDB’s reader-doesn’t-block-writer safety.  ￼
+
+⸻
+
+11 Replication & Sharding
+	1.	RAFT-style async replicas (optional WAL shipping).
+	2.	Hash-based partitioning: first 8 bytes of key.
+	3.	WASM modules shipped through meta stream to keep logic in sync.
+
+⸻
+
+12 Security Model
+
+Layer	Mechanism
+Transport	mTLS
+AuthZ	Bearer or SPIFFE workload IDs
+In-WASM	Capability list injected as env var
+Resource	fuel, mem, stack, wall-clock quotas
+
+
+⸻
+
+13 Operational Concerns
+	•	Config file: TOML; hot-reload for log level, compaction window.
+	•	CLI: llmdb doctor (health), llmdb time-travel --at "2024-12-31T23:59:59Z".
+	•	Backup: steady-state snapshot copy + incremental page delta.
+
+⸻
+
+14 Implementation Road-Map
+
+Milestone	Deliverable	ETA
+M0	Read-only KV + MVCC reader	6 w
+M1	Single writer + WAL & crash recovery	12 w
+M2	Bitemporal keys + range ops	16 w
+M3	WASM sandbox + map_pages	22 w
+M4	LQL parser + gRPC layer	28 w
+M5	Graph/document adapters	34 w
+M6	Embedding vector plugin	38 w
+M7	Replication (RAFT)	46 w
+M8	Security hardening, 1.0-RC	52 w
+
+
+⸻
+
+15 Future Extensions
+	•	Delta-replicated mobile sync
+	•	GPU-native vector blocks
+	•	Tri-temporal keys
+	•	Differential privacy lens for LLM prompts
+
+⸻
+
+References
+
+LMDB design & performance characteristics.  ￼
+Code-in-DB precedent (SpaceTimeDB).  ￼ ￼
+Edge-latency benefits of WASM.  ￼ ￼
+Bitemporal modeling fundamentals.  ￼
+
+⸻
+
+End of specification.
