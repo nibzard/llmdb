@@ -11,10 +11,10 @@
 
 ## Phase 1 – Repository Bootstrap
 
-- [ ] Expand `README.md` with summary and setup instructions.
-- [ ] Add `AGENTS.md` outlining rules for autonomous contributors.
-- [ ] Scaffold directories from `START.md` (src/, tests/, docs/, scripts/...).
-- [ ] Create `pyproject.toml` and `.pre-commit-config.yaml`.
+- [x] Expand `README.md` with summary and setup instructions.
+- [x] Add `AGENTS.md` outlining rules for autonomous contributors.
+- [x] Scaffold directories from `START.md` (src/, tests/, docs/, scripts/...)
+- [x] Create `pyproject.toml` and `.pre-commit-config.yaml`.
 
 ## Phase 2 – Core Storage Engine
 
