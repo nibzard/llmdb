@@ -1,0 +1,15 @@
+[project]
+name = "llmdb"
+version = "0.1.0"
+description = "Tiny, time-aware LMDB wrapper and MCP demo"
+authors = [{name = "LLMDB Project"}]
+requires-python = ">=3.12"
+dependencies = ["lmdb>=1.4"]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.100", "uvicorn>=0.23", "requests", "pydantic-settings>=2.0"]
+
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
