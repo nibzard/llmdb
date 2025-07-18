@@ -18,9 +18,9 @@
 
 ## Phase 2 – Core Storage Engine
 
-- [ ] Implement minimal `src/llmdb/kv.py` wrapping `lmdb.Environment` (read-only).
-- [ ] Write unit tests in `tests/unit/test_kv.py`.
-- [ ] Document the API in `docs/api/`.
+- [x] Implement minimal `src/llmdb/kv.py` wrapping `lmdb.Environment` (read-only).
+- [x] Write unit tests in `tests/unit/test_kv.py`.
+- [x] Document the API in `docs/api/`.
 
 ## Phase 3 – Write Path & Recovery
 
