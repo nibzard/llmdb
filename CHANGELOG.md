@@ -9,5 +9,6 @@ All notable changes to this project will be documented in this file.
 - Graph façade with `put_edge` and `out_edges` helpers.
 - MCP CRUD verbs and dependency injection.
 - `make typecheck` target and pytest coverage hook.
+- `KV.delete` convenience method.
 ### Changed
 - Pre-commit now runs pytest with coverage.
