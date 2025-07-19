@@ -7,7 +7,7 @@ __all__ = ["router"]
 from fastapi import APIRouter, HTTPException, Response, Depends
 
 from llmdb.kv import KV, RawValue
-from llmdb.temporal_key import Key, pack
+from llmdb.temporal_key import Key
 
 router = APIRouter()
 
@@ -34,8 +34,6 @@ async def get_value(key: str, kv: KV = Depends()) -> dict[str, str]:
 
 @router.delete("/kv/{key}")
 async def delete_value(key: str, kv: KV = Depends()) -> Response:
-    encoded = pack(_decode_key(key))
-    with kv.env.begin(write=True) as txn:
-        if not txn.delete(encoded):
-            raise HTTPException(status_code=404)
+    if not kv.delete(_decode_key(key)):
+        raise HTTPException(status_code=404)
     return Response(status_code=204)

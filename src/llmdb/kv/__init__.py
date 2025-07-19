@@ -37,3 +37,9 @@ class KV:
             cursor = txn.cursor()
             for k, v in cursor:
                 yield unpack(k), decode(v)
+
+    def delete(self, key: Key) -> bool:
+        """Remove ``key`` from the database."""
+        encoded = pack(key)
+        with self.env.begin(write=True) as txn:
+            return bool(txn.delete(encoded))
