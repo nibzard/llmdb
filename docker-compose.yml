@@ -1,0 +1,270 @@
+version: '3.8'
+
+services:
+  # LLMDB Server
+  llmdb-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: llmdb-server
+    ports:
+      - "8080:8080"     # HTTP/REST API
+      - "50051:50051"   # gRPC API
+    environment:
+      - LLMDB_LOG_LEVEL=info
+      - LLMDB_DATA_PATH=/data
+      - LLMDB_HTTP_PORT=8080
+      - LLMDB_GRPC_PORT=50051
+      - LLMDB_ENABLE_WAL=true
+      - LLMDB_WASM_FUEL_LIMIT=25000000
+      - LLMDB_MAX_CONNECTIONS=1000
+    volumes:
+      - llmdb-data:/data
+      - llmdb-logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - llmdb-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+        reservations:
+          memory: 512M
+          cpus: "0.25"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+
+  # Development Server (with hot reload)
+  llmdb-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: llmdb-dev
+    ports:
+      - "8081:8080"     # HTTP/REST API (dev port)
+      - "50052:50051"   # gRPC API (dev port)
+    environment:
+      - LLMDB_LOG_LEVEL=debug
+      - LLMDB_DATA_PATH=/data
+      - LLMDB_HTTP_PORT=8080
+      - LLMDB_GRPC_PORT=50051
+      - LLMDB_ENABLE_WAL=false  # Disable WAL for faster development
+      - LLMDB_RELOAD=true       # Enable hot reload
+    volumes:
+      - ./src:/app/src:ro       # Mount source code for hot reload
+      - ./tests:/app/tests:ro   # Mount tests
+      - llmdb-dev-data:/data
+      - llmdb-dev-logs:/logs
+    command: python -m uvicorn src.mcp_server.server:app --host 0.0.0.0 --port 8080 --reload
+    networks:
+      - llmdb-network
+    profiles:
+      - development
+
+  # Test Runner
+  llmdb-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    container_name: llmdb-tests
+    environment:
+      - PYTHONPATH=/app
+      - LLMDB_TEST_DATA_PATH=/tmp/test-data
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+    command: pytest tests/ -v --cov=src/llmdb --cov-report=html:/app/coverage
+    networks:
+      - llmdb-network
+    profiles:
+      - test
+
+  # Benchmarking Service
+  llmdb-benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: benchmark
+    container_name: llmdb-benchmark
+    environment:
+      - LLMDB_SERVER_URL=http://llmdb-server:8080
+      - BENCHMARK_DURATION=60s
+      - BENCHMARK_THREADS=10
+    volumes:
+      - ./benchmarks:/app/benchmarks:ro
+      - benchmark-results:/app/results
+    command: python benchmarks/run_all.py --output /app/results
+    depends_on:
+      llmdb-server:
+        condition: service_healthy
+    networks:
+      - llmdb-network
+    profiles:
+      - benchmark
+
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: llmdb-prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - llmdb-network
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: llmdb-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - llmdb-network
+    profiles:
+      - monitoring
+
+  # WASM Module Builder
+  wasm-builder:
+    image: rust:1.70
+    container_name: llmdb-wasm-builder
+    working_dir: /workspace
+    volumes:
+      - ./examples/wasm-modules:/workspace:rw
+    command: |
+      bash -c "
+        rustup target add wasm32-wasi &&
+        for dir in */; do
+          if [ -f \"\$dir/Cargo.toml\" ]; then
+            echo \"Building WASM module: \$dir\"
+            cd \"\$dir\"
+            cargo build --target wasm32-wasi --release
+            cd ..
+          fi
+        done
+      "
+    profiles:
+      - wasm-build
+
+  # Load Testing
+  locust:
+    build:
+      context: .
+      dockerfile: Dockerfile.locust
+    container_name: llmdb-locust
+    ports:
+      - "8089:8089"
+    environment:
+      - LOCUST_HOST=http://llmdb-server:8080
+    volumes:
+      - ./tests/load:/app/tests/load:ro
+    command: locust -f /app/tests/load/locustfile.py --host=http://llmdb-server:8080
+    depends_on:
+      llmdb-server:
+        condition: service_healthy
+    networks:
+      - llmdb-network
+    profiles:
+      - load-test
+
+  # Client Examples
+  example-client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: llmdb-example-client
+    environment:
+      - LLMDB_SERVER_URL=http://llmdb-server:8080
+    volumes:
+      - ./examples:/app/examples:ro
+    command: python examples/simple_client.py
+    depends_on:
+      llmdb-server:
+        condition: service_healthy
+    networks:
+      - llmdb-network
+    profiles:
+      - examples
+
+# Networks
+networks:
+  llmdb-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Volumes
+volumes:
+  llmdb-data:
+    driver: local
+  llmdb-logs:
+    driver: local
+  llmdb-dev-data:
+    driver: local
+  llmdb-dev-logs:
+    driver: local
+  benchmark-results:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# Additional compose files for different environments
+# Usage examples:
+#
+# Development:
+# docker-compose --profile development up
+#
+# Testing:
+# docker-compose --profile test run --rm llmdb-tests
+#
+# Benchmarking:
+# docker-compose --profile benchmark up
+#
+# Monitoring:
+# docker-compose --profile monitoring up
+#
+# Load testing:
+# docker-compose --profile load-test up
+#
+# Build WASM modules:
+# docker-compose --profile wasm-build run --rm wasm-builder
+#
+# Run examples:
+# docker-compose --profile examples run --rm example-client
+#
+# Production (default):
+# docker-compose up
